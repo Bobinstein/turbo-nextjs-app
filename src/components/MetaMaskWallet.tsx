@@ -358,8 +358,7 @@ export default function MetaMaskWallet() {
               }
             );
             console.log("manualPost json", await manualPost.json());
-            console.log("manualPost text", await manualPost.text());
-            console.log("manualPost blob", await manualPost.blob());
+
 
             const signDataTest = await turbo.uploadSignedDataItem({
               dataItemStreamFactory: () =>
@@ -444,10 +443,8 @@ export default function MetaMaskWallet() {
               },
             }
           );
-          console.log("manualPost", manualPost);
-          console.log("manualPost json", await manualPost.json());
-          console.log("manualPost text", await manualPost.text());
-          console.log("manualPost blob", await manualPost.blob());
+          console.log("manualPost", await manualPost.json());
+
 
           const signDataTest = await turbo.uploadSignedDataItem({
             dataItemStreamFactory: () =>
