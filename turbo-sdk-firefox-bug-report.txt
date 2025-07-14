@@ -1,0 +1,197 @@
+TURBO-SDK FIREFOX BUG REPORT
+================================
+
+ISSUE SUMMARY:
+Firefox-specific data item parsing error when using turbo-sdk uploadFile() and uploadSignedDataItem() methods, resulting in HTTP 400 responses with "Data item parsing error" message. Manual posting of identical signed data items succeeds, indicating the issue lies within the SDK's HTTP transmission layer rather than data item creation or signing.
+
+AFFECTED BROWSERS:
+- Firefox: AFFECTED
+- Chrome/Chromium: NOT AFFECTED (working normally)
+
+ORIGINAL REPORT:
+- Reporter: Discord user @cristobalbahe
+- Source: https://discord.com/channels/743164999379451944/757396913732452412/1394252454777847848
+- User confirmed chromium works with standard uploadFile() implementation but Firefox returns 400 errors
+
+REPRODUCTION STEPS:
+1. Use Firefox browser
+2. Create file upload using turbo-sdk with standard implementation:
+```javascript
+turbo.uploadFile({
+fileStreamFactory: () => file.stream(),
+fileSizeFactory: () => file.size,
+dataItemOpts: {
+tags: [
+{ name: "Content-Type", value: file.type }
+],
+paidBy: payingAddress,
+}
+})                                                                  ;
+```
+3. Observe HTTP 400 response with "Data item parsing error"
+
+EXPECTED BEHAVIOR:
+- Should upload successfully as it does in Chrome/Chromium browsers
+- Should return transaction ID and confirmation
+
+ACTUAL BEHAVIOR:
+- HTTP 400 Bad Request
+- Error message: "Data item parsing error"
+- Upload fails after successful signing phase
+
+INVESTIGATION FINDINGS:
+
+1. DATA ITEM INTEGRITY VERIFICATION:
+- Created identical data items manually using createData() from @dha-team/arbundles
+- Verified data item signatures match between manual creation and SDK usage
+- Manual data item verification passes: DataItem.verify(dataItem.getRaw()) returns true
+- Same signer instance used for both manual and SDK approaches
+
+2. MANUAL POSTING SUCCESS:
+Manual POST requests to both API endpoints succeed in Firefox:
+- https://upload.ardrive.io/v1/tx/ethereum (SUCCESS)
+- https://turbo.ardrive.io/tx/ethereum (SUCCESS)
+
+Using identical data item payload:
+```javascript
+fetch(endpoint, {
+method: "POST",
+body: dataItem.getRaw(),
+headers: { "Content-Type": "application/octet-stream" }
+})                                                      ;
+```
+
+3. SDK METHOD FAILURES:
+Both SDK methods fail with identical 400 errors in Firefox:
+- turbo.uploadFile() - FAILS
+- turbo.uploadSignedDataItem() - FAILS
+
+Error consistently occurs during HTTP transmission, not during:
+- File processing
+- Data item creation
+- Signing process
+
+4. ATTEMPTED WORKAROUNDS:
+Multiple approaches attempted to resolve Firefox streaming issues:
+
+a) Axios Adapter Override:
+```javascript
+// Detect Firefox and override axios adapter
+const isFirefox = navigator.userAgent.includes('Firefox');
+
+if (isFirefox) {
+const originalCreate = axios.create          ;
+axios.create = function(config) {
+return originalCreate({
+...config,
+adapter: 'xhr' // Force XHR instead of fetch
+})                                           ;
+}                                            ;
+}
+
+// Attempt standard turbo-sdk upload
+const result = await turbo.uploadFile({
+fileStreamFactory: () => file.stream(),
+fileSizeFactory: () => file.size,
+// ... other options
+})                                                                     ;
+```
+- Failed: turbo-sdk imports axios directly, bypassing global overrides
+
+b) Stream Factory Modification:
+```javascript
+// Create ArrayBuffer-based ReadableStream
+const arrayBuffer = await file.arrayBuffer()    ;
+const result = await turbo.uploadFile({
+fileStreamFactory: () => new ReadableStream({
+start(controller) {
+controller.enqueue(new Uint8Array(arrayBuffer)) ;
+controller.close()                              ;
+}
+}),
+fileSizeFactory: () => file.size,
+// ... other options
+})                                              ;
+```
+- Failed: Issue persists in HTTP layer
+
+c) Buffer/Uint8Array Conversion:
+```javascript
+// Convert to Uint8Array/Buffer for fileStreamFactory
+const arrayBuffer = await file.arrayBuffer()                               ;
+const result = await turbo.uploadFile({
+fileStreamFactory: () => new Uint8Array(arrayBuffer) as unknown as Buffer,
+fileSizeFactory: () => file.size,
+// ... other options
+})                                                                         ;
+```
+- Failed: SDK still processes through problematic HTTP layer
+
+d) Manual Data Item Creation and Upload:
+```javascript
+// Create data item manually using arbundles
+const dataItem = await createData(
+new Uint8Array(await file.arrayBuffer()),
+signer,
+{
+tags: [
+{ name: "Content-Type", value: file.type },
+{ name: "App-Name", value: "My-Next-App" },
+{ name: "Funded-By", value: "Ethereum" },
+{ name: "File-Name", value: file.name },
+],
+}
+)                                            ;
+await dataItem.sign(signer)                  ;
+
+// Manual POST - SUCCEEDS
+const manualPost = await fetch("https://upload.ardrive.io/v1/tx/ethereum", {
+method: "POST",
+body: dataItem.getRaw(),
+headers: { "Content-Type": "application/octet-stream" }
+})                                                                           ;
+
+// SDK method with same data item - FAILS
+const result = await turbo.uploadSignedDataItem({
+dataItemStreamFactory: () => new ReadableStream({
+start(controller) {
+controller.enqueue(dataItem.getRaw())                                   ;
+controller.close()                                                      ;
+}
+}),
+dataItemSizeFactory: () => dataItem.getRaw().byteLength
+})                                                                      ;
+```
+- Manual fetch() succeeds (HTTP 200)
+- SDK uploadSignedDataItem() fails (HTTP 400 "Data item parsing error")
+
+ROOT CAUSE ANALYSIS:
+The issue appears to be Firefox-specific handling of ReadableStream data in HTTP requests within the turbo-sdk's HTTP client implementation. While data items are created and signed correctly, the HTTP transmission layer corrupts the binary data during upload, causing the server to reject the payload with "Data item parsing error".
+
+KEY EVIDENCE:
+1. Identical data items succeed when posted manually via fetch()
+2. Same data items fail when posted via SDK methods
+3. Issue is browser-specific (Firefox only)
+4. Data item integrity is verified before SDK submission
+5. Error occurs at HTTP level, not during signing or creation
+
+TECHNICAL DETAILS:
+- turbo-sdk version: 1.28.3
+- Browser: Firefox 140.0.4
+- Error occurs in axios HTTP client layer
+- Suspected: Firefox ReadableStream corruption in HTTP transmission
+- Manual fetch() requests work, SDK HTTP requests fail
+
+IMPACT:
+- Complete inability to upload files using turbo-sdk in Firefox
+- Affects all Firefox users of applications using turbo-sdk
+- Manual workaround requires direct API calls, bypassing SDK benefits
+
+SUGGESTED INVESTIGATION AREAS:
+1. Review turbo-sdk's HTTP client implementation for Firefox-specific stream handling
+2. Examine axios configuration and adapter usage in turbo-sdk
+3. Test with different content-type headers and request formatting
+4. Investigate ReadableStream polyfill or alternative stream handling for Firefox
+
+PRIORITY: HIGH
+Firefox represents significant user base and complete functionality failure impacts user experience.
